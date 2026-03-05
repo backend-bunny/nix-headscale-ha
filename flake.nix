@@ -6,35 +6,39 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    let
-      # -----------------------------------------------------------------------
-      # Package overlay: adds headscale-leader-election to pkgs
-      # -----------------------------------------------------------------------
-      overlay = final: prev: {
-        headscale-leader-election = final.callPackage ./leader-election/default.nix { };
-      };
+  outputs = {
+    self,
+    nixpkgs,
+    flake-utils,
+  }: let
+    # -----------------------------------------------------------------------
+    # Package overlay: adds headscale-leader-election to pkgs
+    # -----------------------------------------------------------------------
+    overlay = final: prev: {
+      headscale-leader-election = final.callPackage ./leader-election/default.nix {};
+    };
 
-      # -----------------------------------------------------------------------
-      # NixOS modules exported by this flake
-      # -----------------------------------------------------------------------
-      nixosModules = {
-        headscale-ha         = import ./modules/headscale-ha.nix;
-        leader-election      = import ./modules/leader-election.nix;
-        litestream-ha        = import ./modules/litestream-ha.nix;
-        headscale-watchdog   = import ./modules/headscale-watchdog.nix;
-        caddy-headscale      = import ./modules/caddy-headscale.nix;
-      };
-    in
+    # -----------------------------------------------------------------------
+    # NixOS modules exported by this flake
+    # -----------------------------------------------------------------------
+    nixosModules = {
+      headscale-ha = import ./modules/headscale-ha.nix;
+      leader-election = import ./modules/leader-election.nix;
+      litestream-ha = import ./modules/litestream-ha.nix;
+      headscale-watchdog = import ./modules/headscale-watchdog.nix;
+      caddy-headscale = import ./modules/caddy-headscale.nix;
+    };
+  in
     # Per-system outputs (packages, devShell, checks)
-    flake-utils.lib.eachDefaultSystem (system:
-      let
+    flake-utils.lib.eachDefaultSystem (
+      system: let
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [ overlay ];
+          overlays = [overlay];
         };
-      in
-      {
+      in {
+        formatter = pkgs.alejandra;
+
         # Build the leader-election binary: `nix build .#headscale-leader-election`
         packages = {
           headscale-leader-election = pkgs.headscale-leader-election;
@@ -47,7 +51,7 @@
           #   nix build .#caddy-cloudflare 2>&1 | grep 'got:'
           # and update the hash below.
           caddy-cloudflare = pkgs.caddy.withPlugins {
-            plugins = [ "github.com/caddy-dns/cloudflare@v0.2.1" ];
+            plugins = ["github.com/caddy-dns/cloudflare@v0.2.1"];
             # Replace with the hash printed by the bootstrap command above.
             hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
           };
@@ -83,7 +87,8 @@
             };
           };
       }
-    ) // {
+    )
+    // {
       # System-independent outputs
       inherit overlay nixosModules;
 
@@ -95,7 +100,7 @@
         node1 = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
-            { nixpkgs.overlays = [ overlay ]; }
+            {nixpkgs.overlays = [overlay];}
             nixosModules.headscale-ha
             ./nixos/node1.nix
           ];
@@ -104,7 +109,7 @@
         node2 = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
-            { nixpkgs.overlays = [ overlay ]; }
+            {nixpkgs.overlays = [overlay];}
             nixosModules.headscale-ha
             ./nixos/node2.nix
           ];
@@ -113,7 +118,7 @@
         node3 = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           modules = [
-            { nixpkgs.overlays = [ overlay ]; }
+            {nixpkgs.overlays = [overlay];}
             nixosModules.headscale-ha
             ./nixos/node3.nix
           ];

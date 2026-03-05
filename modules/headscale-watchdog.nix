@@ -30,17 +30,20 @@
 # The token is read at runtime from cloudflare.tokenFile (a systemd
 # EnvironmentFile-format file: CLOUDFLARE_DNS_API_TOKEN=cfxxx).  The file is
 # never embedded in the Nix store — provision it with sops-nix or agenix.
-{ config, lib, pkgs, ... }:
-
-let
-  cfg   = config.services.headscaleWatchdog;
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.services.headscaleWatchdog;
   cfgCf = cfg.cloudflare;
   inherit (lib) mkIf mkEnableOption mkOption types;
 
   watchdogScript = pkgs.writeShellApplication {
     name = "headscale-watchdog";
 
-    runtimeInputs = with pkgs; [ curl jq systemd coreutils ];
+    runtimeInputs = with pkgs; [curl jq systemd coreutils];
 
     text = ''
       # -----------------------------------------------------------------------
@@ -51,12 +54,36 @@ let
       STARTUP_GRACE=${toString cfg.startupGrace}
 
       # Cloudflare DNS update settings — empty strings when disabled.
-      CF_ENABLED="${if cfgCf.enable then "true" else ""}"
-      CF_TOKEN_FILE="${if cfgCf.enable then cfgCf.tokenFile else ""}"
-      CF_ZONE_ID="${if cfgCf.enable then cfgCf.zoneId else ""}"
-      CF_RECORD_NAME="${if cfgCf.enable then cfgCf.recordName else ""}"
-      CF_NODE_ADDRESS="${if cfgCf.enable then cfgCf.nodeAddress else ""}"
-      CF_TTL="${if cfgCf.enable then toString cfgCf.ttl else "60"}"
+      CF_ENABLED="${
+        if cfgCf.enable
+        then "true"
+        else ""
+      }"
+      CF_TOKEN_FILE="${
+        if cfgCf.enable
+        then cfgCf.tokenFile
+        else ""
+      }"
+      CF_ZONE_ID="${
+        if cfgCf.enable
+        then cfgCf.zoneId
+        else ""
+      }"
+      CF_RECORD_NAME="${
+        if cfgCf.enable
+        then cfgCf.recordName
+        else ""
+      }"
+      CF_NODE_ADDRESS="${
+        if cfgCf.enable
+        then cfgCf.nodeAddress
+        else ""
+      }"
+      CF_TTL="${
+        if cfgCf.enable
+        then toString cfgCf.ttl
+        else "60"
+      }"
 
       IS_LEADER_PREV=""
 
@@ -192,8 +219,7 @@ let
       done
     '';
   };
-in
-{
+in {
   # ---------------------------------------------------------------------------
   # Options
   # ---------------------------------------------------------------------------
@@ -201,20 +227,20 @@ in
     enable = mkEnableOption "headscale leadership watchdog";
 
     leaderElectionBaseUrl = mkOption {
-      type        = types.str;
-      default     = "http://127.0.0.1:50555";
+      type = types.str;
+      default = "http://127.0.0.1:50555";
       description = "Base URL of the local leader-election daemon.";
     };
 
     pollInterval = mkOption {
-      type        = types.int;
-      default     = 5;
+      type = types.int;
+      default = 5;
       description = "Seconds between leadership polls.";
     };
 
     startupGrace = mkOption {
-      type        = types.int;
-      default     = 5;
+      type = types.int;
+      default = 5;
       description = ''
         Seconds to wait after the leader-election daemon reports healthy
         before the watchdog starts making decisions.  Gives the cluster time
@@ -225,7 +251,7 @@ in
     # ── Cloudflare DNS failover ─────────────────────────────────────────────
     cloudflare = {
       enable = mkOption {
-        type    = types.bool;
+        type = types.bool;
         default = false;
         description = ''
           When true, the watchdog calls the Cloudflare v4 API to update the
@@ -242,7 +268,7 @@ in
       };
 
       tokenFile = mkOption {
-        type        = types.path;
+        type = types.path;
         description = ''
           Path to a secrets file in systemd EnvironmentFile format:
 
@@ -259,7 +285,7 @@ in
       };
 
       zoneId = mkOption {
-        type        = types.str;
+        type = types.str;
         description = ''
           Cloudflare Zone ID that contains the headscale A record.
           Visible on the domain's Overview page in the Cloudflare dashboard.
@@ -268,7 +294,7 @@ in
       };
 
       recordName = mkOption {
-        type        = types.str;
+        type = types.str;
         description = ''
           Fully-qualified name of the DNS A record to update on promotion,
           e.g. <literal>headscale.example.com</literal>.
@@ -277,7 +303,7 @@ in
       };
 
       nodeAddress = mkOption {
-        type        = types.str;
+        type = types.str;
         description = ''
           Public IPv4 address of this node.  Written as the A record content
           when this node is promoted to primary.
@@ -286,7 +312,7 @@ in
       };
 
       ttl = mkOption {
-        type    = types.int;
+        type = types.int;
         default = 60;
         description = ''
           DNS record TTL in seconds.  60 is the Cloudflare minimum for
@@ -300,10 +326,9 @@ in
   # Implementation
   # ---------------------------------------------------------------------------
   config = mkIf cfg.enable {
-
     assertions = lib.optional cfgCf.enable {
       assertion = cfgCf.zoneId != "" && cfgCf.recordName != "" && cfgCf.nodeAddress != "";
-      message   = "services.headscaleWatchdog.cloudflare: zoneId, recordName, and nodeAddress must all be set when cloudflare.enable = true.";
+      message = "services.headscaleWatchdog.cloudflare: zoneId, recordName, and nodeAddress must all be set when cloudflare.enable = true.";
     };
 
     # The watchdog starts/stops headscale and litestream system services, so it
@@ -312,12 +337,12 @@ in
 
     systemd.services.headscale-watchdog = {
       description = "Headscale leadership watchdog";
-      wantedBy    = [ "multi-user.target" ];
-      after       = [
+      wantedBy = ["multi-user.target"];
+      after = [
         "network-online.target"
         "headscale-leader-election.service"
       ];
-      wants       = [
+      wants = [
         "network-online.target"
         "headscale-leader-election.service"
       ];
@@ -325,20 +350,20 @@ in
       # The watchdog must NOT start headscale on activation — it will do so
       # only once it has confirmed leadership.
       serviceConfig = {
-        Type             = "simple";
-        ExecStart        = "${watchdogScript}/bin/headscale-watchdog";
-        Restart          = "on-failure";
-        RestartSec       = "5s";
-        StandardOutput   = "journal";
-        StandardError    = "journal";
+        Type = "simple";
+        ExecStart = "${watchdogScript}/bin/headscale-watchdog";
+        Restart = "on-failure";
+        RestartSec = "5s";
+        StandardOutput = "journal";
+        StandardError = "journal";
 
         # Light hardening — keep filesystem mostly read-only; the watchdog
         # uses systemctl (over D-Bus) to manage services and only needs to
         # read the optional Cloudflare token file.
-        ProtectSystem    = "strict";
-        ProtectHome      = true;
-        PrivateTmp       = true;
-        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        RestrictAddressFamilies = ["AF_INET" "AF_INET6" "AF_UNIX"];
         # Explicitly allow read access to the Cloudflare token file.
         ReadOnlyPaths = lib.optional cfgCf.enable cfgCf.tokenFile;
       };
@@ -348,7 +373,7 @@ in
     # (headscale.service is installed by services.headscale.enable but we
     # remove it from the default target here.)
     systemd.services.headscale = {
-      wantedBy       = lib.mkForce [];
+      wantedBy = lib.mkForce [];
       # Allow the watchdog to start it without a dependency cycle.
       unitConfig.RefuseManualStop = lib.mkForce false;
     };

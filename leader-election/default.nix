@@ -1,5 +1,7 @@
-{ lib, buildGoModule }:
-
+{
+  lib,
+  buildGoModule,
+}:
 buildGoModule {
   pname = "headscale-leader-election";
   version = "0.1.0";
@@ -13,7 +15,8 @@ buildGoModule {
     CGO_ENABLED = 0;
   };
   ldflags = [
-    "-s" "-w"
+    "-s"
+    "-w"
     "-extldflags=-static"
   ];
 

@@ -16,16 +16,21 @@
 # • HTTPS (port 443) — REST API, web UI, Tailscale client registration
 # • gRPC-over-TLS (port 443, h2) — Tailscale coordination over gRPC
 # • Caddy handles TLS termination and proxies plain-HTTP/h2c upstream.
-{ config, lib, pkgs, ... }:
-
-let
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   cfg = config.services.caddyHeadscale;
   inherit (lib) mkIf mkEnableOption mkOption types literalExpression;
 
   # Build the list of upstream dial-addresses for Caddy (host:httpPort).
-  upstreamDialAddrs = lib.concatMapStringsSep "\n        " (node:
-    "to ${node.address}:${toString node.httpPort}"
-  ) cfg.nodes;
+  upstreamDialAddrs =
+    lib.concatMapStringsSep "\n        " (
+      node: "to ${node.address}:${toString node.httpPort}"
+    )
+    cfg.nodes;
 
   # Effective Caddy package: swap in the cloudflare-capable build when the
   # DNS-01 challenge is enabled.
@@ -43,7 +48,7 @@ let
       # Global options
       ${lib.optionalString (cfg.acmeEmail != "") "email ${cfg.acmeEmail}"}
       ${lib.optionalString cfg.cloudflare.enable
-        "# DNS-01 challenge via Cloudflare — token loaded from EnvironmentFile\n      acme_dns cloudflare {env.CLOUDFLARE_DNS_API_TOKEN}"}
+      "# DNS-01 challenge via Cloudflare — token loaded from EnvironmentFile\n      acme_dns cloudflare {env.CLOUDFLARE_DNS_API_TOKEN}"}
       admin off
     }
 
@@ -73,9 +78,10 @@ let
         header Content-Type application/grpc*
       }
       reverse_proxy @grpc {
-        ${lib.concatMapStringsSep "\n        " (n:
-            "to ${n.address}:${toString n.grpcPort}"
-          ) cfg.nodes}
+        ${lib.concatMapStringsSep "\n        " (
+        n: "to ${n.address}:${toString n.grpcPort}"
+      )
+      cfg.nodes}
 
         # Use HTTP/2 cleartext transport to the backend (headscale gRPC).
         transport http {
@@ -95,9 +101,10 @@ let
       # Headscale HTTP (REST API + web UI).
       # ---------------------------------------------------------------
       reverse_proxy {
-        ${lib.concatMapStringsSep "\n        " (n:
-            "to ${n.address}:${toString n.httpPort}"
-          ) cfg.nodes}
+        ${lib.concatMapStringsSep "\n        " (
+        n: "to ${n.address}:${toString n.httpPort}"
+      )
+      cfg.nodes}
 
         # Preserve important headers for headscale's address detection.
         header_up Host              {upstream_hostport}
@@ -119,9 +126,7 @@ let
       redir https://{host}{uri} permanent
     }
   '';
-
-in
-{
+in {
   # ---------------------------------------------------------------------------
   # Options
   # ---------------------------------------------------------------------------
@@ -129,92 +134,92 @@ in
     enable = mkEnableOption "Caddy HA reverse proxy for headscale";
 
     serverName = mkOption {
-      type        = types.str;
+      type = types.str;
       description = "Fully-qualified domain name served by Caddy (e.g. headscale.example.com).";
-      example     = "headscale.example.com";
+      example = "headscale.example.com";
     };
 
     acmeEmail = mkOption {
-      type        = types.str;
-      default     = "";
+      type = types.str;
+      default = "";
       description = "Email address for Let's Encrypt / ACME certificate requests. Leave empty to disable automatic ACME.";
-      example     = "admin@example.com";
+      example = "admin@example.com";
     };
 
     tls.extraConfig = mkOption {
-      type        = types.lines;
-      default     = "";
+      type = types.lines;
+      default = "";
       description = "Extra Caddy TLS directives inserted verbatim into the site block, e.g. 'tls internal' for local CA.";
-      example     = "tls internal";
+      example = "tls internal";
     };
 
     # -- Cloudflare DNS-01 TLS -----------------------------------------------
     cloudflare = {
       enable = mkOption {
-        type    = types.bool;
+        type = types.bool;
         default = false;
-        description = ''Obtain TLS certificates via the ACME DNS-01 challenge using the
-          Cloudflare API.  This avoids the need for inbound HTTP-01 traffic and
-          works for internal/private hostnames.
+        description = ''          Obtain TLS certificates via the ACME DNS-01 challenge using the
+                    Cloudflare API.  This avoids the need for inbound HTTP-01 traffic and
+                    works for internal/private hostnames.
 
-          Requires a Caddy build that includes the caddy-dns/cloudflare plugin.
-          Set <option>cloudflare.caddyPackage</option> to
-          <literal>pkgs.caddy-cloudflare</literal> (exposed by this flake) or
-          build your own with <literal>pkgs.caddy.withPlugins</literal>.
+                    Requires a Caddy build that includes the caddy-dns/cloudflare plugin.
+                    Set <option>cloudflare.caddyPackage</option> to
+                    <literal>pkgs.caddy-cloudflare</literal> (exposed by this flake) or
+                    build your own with <literal>pkgs.caddy.withPlugins</literal>.
         '';
       };
 
       tokenFile = mkOption {
-        type        = types.path;
-        description = ''Path to a file whose content is a systemd EnvironmentFile
-          containing the Cloudflare API token in the form:
+        type = types.path;
+        description = ''          Path to a file whose content is a systemd EnvironmentFile
+                    containing the Cloudflare API token in the form:
 
-            CLOUDFLARE_DNS_API_TOKEN=cfxxxxxxxxxxxxxxxx
+                      CLOUDFLARE_DNS_API_TOKEN=cfxxxxxxxxxxxxxxxx
 
-          The file is loaded as a systemd EnvironmentFile so it must use that
-          exact KEY=VALUE format (no quotes, no export keyword).
+                    The file is loaded as a systemd EnvironmentFile so it must use that
+                    exact KEY=VALUE format (no quotes, no export keyword).
 
-          Recommended: provision this file with sops-nix or agenix so the
-          token is never stored in the Nix store.  Example (sops-nix):
+                    Recommended: provision this file with sops-nix or agenix so the
+                    token is never stored in the Nix store.  Example (sops-nix):
 
-            sops.secrets."caddy-cloudflare-token" = {
-              format      = "binary";   # raw file, no sops YAML wrapping
-              # store the file as  CLOUDFLARE_DNS_API_TOKEN=cfxxx
-              owner       = "caddy";
-              path        = "/run/secrets/caddy-cloudflare-token";
-            };
+                      sops.secrets."caddy-cloudflare-token" = {
+                        format      = "binary";   # raw file, no sops YAML wrapping
+                        # store the file as  CLOUDFLARE_DNS_API_TOKEN=cfxxx
+                        owner       = "caddy";
+                        path        = "/run/secrets/caddy-cloudflare-token";
+                      };
         '';
         example = "/run/secrets/caddy-cloudflare-token";
       };
 
       caddyPackage = mkOption {
-        type        = types.package;
-        description = ''Caddy package that includes the caddy-dns/cloudflare plugin.
-          The default value uses <literal>pkgs.caddy.withPlugins</literal> to
-          build caddy with the cloudflare plugin included.
+        type = types.package;
+        description = ''          Caddy package that includes the caddy-dns/cloudflare plugin.
+                    The default value uses <literal>pkgs.caddy.withPlugins</literal> to
+                    build caddy with the cloudflare plugin included.
 
-          You can override this with the <literal>caddy-cloudflare</literal>
-          package exported by this flake:
+                    You can override this with the <literal>caddy-cloudflare</literal>
+                    package exported by this flake:
 
-            cloudflare.caddyPackage = inputs.nix-headscale-ha.packages.''${system}.caddy-cloudflare;
+                      cloudflare.caddyPackage = inputs.nix-headscale-ha.packages.''${system}.caddy-cloudflare;
 
-          Or build your own:
+                    Or build your own:
 
-            cloudflare.caddyPackage = pkgs.caddy.withPlugins {
-              plugins = [ "github.com/caddy-dns/cloudflare@v0.2.1" ];
-              hash    = "sha256-...";
-            };
+                      cloudflare.caddyPackage = pkgs.caddy.withPlugins {
+                        plugins = [ "github.com/caddy-dns/cloudflare@v0.2.1" ];
+                        hash    = "sha256-...";
+                      };
         '';
         # Default: build caddy with the cloudflare DNS plugin at a pinned version.
         # Bootstrap the vendorHash once by running:
         #   nix build .#caddy-cloudflare 2>&1 | grep 'got:'
         # then replace the hash below.
-        defaultText = literalExpression ''pkgs.caddy.withPlugins {
-          plugins = [ "github.com/caddy-dns/cloudflare@v0.2.1" ];
-          hash    = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-        }'';
+        defaultText = literalExpression ''          pkgs.caddy.withPlugins {
+                    plugins = [ "github.com/caddy-dns/cloudflare@v0.2.1" ];
+                    hash    = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+                  }'';
         default = pkgs.caddy.withPlugins {
-          plugins = [ "github.com/caddy-dns/cloudflare@v0.2.1" ];
+          plugins = ["github.com/caddy-dns/cloudflare@v0.2.1"];
           # Run `nix build .#caddy-cloudflare 2>&1 | grep 'got:'` to get the
           # correct hash, then replace the placeholder below.
           hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -227,16 +232,16 @@ in
       type = types.listOf (types.submodule {
         options = {
           address = mkOption {
-            type        = types.str;
+            type = types.str;
             description = "IP or hostname reachable from Caddy (e.g. 192.168.1.11).";
           };
           httpPort = mkOption {
-            type    = types.port;
+            type = types.port;
             default = 8080;
             description = "headscale HTTP listen port on this node.";
           };
           grpcPort = mkOption {
-            type    = types.port;
+            type = types.port;
             default = 50443;
             description = "headscale gRPC listen port on this node.";
           };
@@ -251,19 +256,19 @@ in
     };
 
     leaderElectionPort = mkOption {
-      type    = types.port;
+      type = types.port;
       default = 50555;
       description = "Port where each node's leader-election daemon listens (for Caddy health checks).";
     };
 
     healthInterval = mkOption {
-      type    = types.str;
+      type = types.str;
       default = "5s";
       description = "Caddy active health check interval.";
     };
 
     healthTimeout = mkOption {
-      type    = types.str;
+      type = types.str;
       default = "3s";
       description = "Caddy active health check timeout.";
     };
@@ -273,21 +278,22 @@ in
   # Implementation
   # ---------------------------------------------------------------------------
   config = mkIf cfg.enable {
-
     assertions = lib.mkMerge [
-      [{
-        assertion = cfg.nodes != [];
-        message   = "services.caddyHeadscale.nodes must have at least one entry.";
-      }]
+      [
+        {
+          assertion = cfg.nodes != [];
+          message = "services.caddyHeadscale.nodes must have at least one entry.";
+        }
+      ]
       (lib.optional cfg.cloudflare.enable {
         assertion = cfg.acmeEmail != "";
-        message   = "services.caddyHeadscale.acmeEmail must be set when cloudflare.enable = true (required by the ACME client).";
+        message = "services.caddyHeadscale.acmeEmail must be set when cloudflare.enable = true (required by the ACME client).";
       })
     ];
 
     services.caddy = {
-      enable     = true;
-      package    = effectiveCaddyPackage;
+      enable = true;
+      package = effectiveCaddyPackage;
       # Write the generated Caddyfile to the Nix store.
       configFile = pkgs.writeText "Caddyfile" caddyFile;
     };
@@ -297,6 +303,6 @@ in
       lib.mkIf cfg.cloudflare.enable (lib.mkDefault cfg.cloudflare.tokenFile);
 
     # Allow Caddy through the firewall.
-    networking.firewall.allowedTCPPorts = [ 80 443 ];
+    networking.firewall.allowedTCPPorts = [80 443];
   };
 }
