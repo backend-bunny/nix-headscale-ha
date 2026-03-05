@@ -17,6 +17,9 @@
 #          which is below the majority quorum of 2; it must step down.
 # Phase 5  Quorum restore: node2 comes back; quorum = 2/3 is satisfied again;
 #          node1 is re-elected.
+# Phase 6  Client connectivity: two Tailscale clients register via headscale
+#          and successfully exchange ICMP traffic through the WireGuard tunnel
+#          (routed via the embedded DERP server).
 #
 # Infrastructure
 # ──────────────
@@ -81,8 +84,25 @@ let
     gen_cert node2 192.168.1.12
     gen_cert node3 192.168.1.13
 
+    # TLS cert for headscale.test.internal (SANs: all three node IPs + the
+    # hostname, so Caddy can serve it and clients can verify CN/SAN)
+    openssl genrsa -out "$out/headscale.key" 2048 2>/dev/null
+    openssl req -new \
+      -key  "$out/headscale.key" \
+      -out  "$out/headscale.csr" \
+      -subj "/O=headscale-ha-test/CN=headscale.test.internal"
+    openssl x509 -req \
+      -in       "$out/headscale.csr" \
+      -CA       "$out/ca.crt" \
+      -CAkey    "$out/ca.key" \
+      -CAcreateserial \
+      -out      "$out/headscale.crt" \
+      -days     3 \
+      -extfile  <(printf 'subjectAltName=DNS:headscale.test.internal,IP:192.168.1.11,IP:192.168.1.12,IP:192.168.1.13\nextendedKeyUsage=serverAuth\n')
+    rm "$out/headscale.csr"
+
     # Quick sanity check — fail the build early if anything is wrong
-    for n in node1 node2 node3; do
+    for n in node1 node2 node3 headscale; do
       openssl verify -CAfile "$out/ca.crt" "$out/$n.crt" >/dev/null
     done
   '';
@@ -93,10 +113,12 @@ let
   #       them from /run/garage-init/litestream.env and writes them to
   #       /run/garage/litestream.env on each HA node (Phase 0).
   sharedHosts = ''
-    192.168.1.11  node1
+    192.168.1.11  node1  headscale.test.internal
     192.168.1.12  node2
     192.168.1.13  node3
     192.168.1.90  storage
+    192.168.1.101 client1
+    192.168.1.102 client2
   '';
 
   # ── 3. Node factory — returns a NixOS module for a headscale-ha node ──
@@ -188,7 +210,9 @@ let
           enable     = true;
           serverName = "headscale.test.internal";
           acmeEmail  = "";
-          tls.extraConfig = "tls internal";
+          # Use the shared cluster PKI cert so clients can verify TLS without
+          # dealing with Caddy's runtime-generated internal CA.
+          tls.extraConfig = "tls ${clusterPKI}/headscale.crt ${clusterPKI}/headscale.key";
 
           cloudflare.enable = false;  # test uses internal TLS + local Garage
 
@@ -221,6 +245,13 @@ let
       # Add headscale CLI (already included by services.headscale; this
       # ensures it's on PATH in test assertions too)
       environment.systemPackages = [ pkgs.headscale pkgs.curl pkgs.jq ];
+
+      # Trust the cluster CA so tailscale (on client VMs) can verify the
+      # headscale TLS cert without extra --accept-risk flags.
+      security.pki.certificateFiles = [ "${clusterPKI}/ca.crt" ];
+
+      # Open STUN (UDP 3478) and DERP (TCP 443 already open via Caddy)
+      networking.firewall.allowedUDPPorts = [ 3478 ];
 
       virtualisation.memorySize = 768;
       virtualisation.cores      = 2;
@@ -363,6 +394,49 @@ pkgs.testers.nixosTest {
       priority   = 30;
       peerNodes  = [ "node1" "node2" ];
       address    = "192.168.1.13";
+    };
+
+    # ── Tailscale client VMs (for phase 6 connectivity test) ─────────────
+    client1 = { pkgs, lib, ... }: {
+      networking.useDHCP = lib.mkForce false;
+      networking.interfaces.eth1 = {
+        useDHCP = false;
+        ipv4.addresses = [{ address = "192.168.1.101"; prefixLength = 24; }];
+      };
+      networking.defaultGateway = "192.168.1.1";
+      networking.extraHosts     = sharedHosts;
+
+      # Trust the cluster CA so tailscale can verify headscale's TLS cert.
+      security.pki.certificateFiles = [ "${clusterPKI}/ca.crt" ];
+
+      services.tailscale.enable = true;
+      # Allow tailscale's tun device through the firewall.
+      networking.firewall.checkReversePath = "loose";
+      networking.firewall.trustedInterfaces = [ "tailscale0" ];
+
+      environment.systemPackages = [ pkgs.tailscale pkgs.curl ];
+      virtualisation.memorySize = 256;
+      virtualisation.cores      = 1;
+    };
+
+    client2 = { pkgs, lib, ... }: {
+      networking.useDHCP = lib.mkForce false;
+      networking.interfaces.eth1 = {
+        useDHCP = false;
+        ipv4.addresses = [{ address = "192.168.1.102"; prefixLength = 24; }];
+      };
+      networking.defaultGateway = "192.168.1.1";
+      networking.extraHosts     = sharedHosts;
+
+      security.pki.certificateFiles = [ "${clusterPKI}/ca.crt" ];
+
+      services.tailscale.enable = true;
+      networking.firewall.checkReversePath = "loose";
+      networking.firewall.trustedInterfaces = [ "tailscale0" ];
+
+      environment.systemPackages = [ pkgs.tailscale pkgs.curl ];
+      virtualisation.memorySize = 256;
+      virtualisation.cores      = 1;
     };
   };
 
@@ -558,6 +632,64 @@ pkgs.testers.nixosTest {
         st = status(node1)
         assert st["hasQuorum"],     "node1 should report hasQuorum=true"
         assert st["healthyNodes"] >= 2, f"expected ≥2 healthy nodes, got {st['healthyNodes']}"
+
+    # ── Phase 6: Tailscale client connectivity ──────────────────────────────
+
+    with subtest("phase6: register two Tailscale clients and ping each other"):
+        # headscale is running on node1 (restored after phase3b).
+        # Look up the numeric user ID (headscale 0.28 --user takes uint).
+        # The CLI marshals GetUsers() directly → flat JSON array.
+        uid = node1.succeed(
+            "headscale users list --output json"
+            " | jq -r '.[] | select(.name == \"e2e-test-user\") | .id'"
+        ).strip()
+        assert uid, "could not find e2e-test-user in headscale users list"
+
+        # Create a reusable pre-auth key for the test user.
+        # The CLI passes GetPreAuthKey() directly → JSON has .key at top level.
+        authkey = node1.succeed(
+            f"headscale preauthkeys create "
+            f"--user {uid} --reusable --expiration 10m "
+            f"--output json | jq -r .key"
+        ).strip()
+        assert authkey, "failed to create pre-auth key"
+
+        # Register both clients against headscale.
+        # --accept-dns=false avoids needing to configure DNS resolvers in the test.
+        for client in [client1, client2]:
+            client.wait_for_unit("tailscaled.service")
+            client.succeed(
+                f"tailscale up "
+                f"--login-server=https://headscale.test.internal "
+                f"--authkey={authkey} "
+                f"--accept-dns=false "
+                f"--accept-routes"
+            )
+
+        # Wait until both clients appear as connected in headscale.
+        def wait_for_nodes(n):
+            node1.wait_until_succeeds(
+                f"headscale nodes list --output json 2>/dev/null "
+                f"| jq -e '[.[] | select(.online)] | length >= {n}'",
+                timeout=60,
+            )
+
+        wait_for_nodes(2)
+
+        # Retrieve each client's Tailscale IP (100.x.x.x range).
+        ts_ip1 = client1.wait_until_succeeds(
+            "tailscale ip -4 2>/dev/null | grep -v '^$'", timeout=30
+        ).strip()
+        ts_ip2 = client2.wait_until_succeeds(
+            "tailscale ip -4 2>/dev/null | grep -v '^$'", timeout=30
+        ).strip()
+
+        assert ts_ip1.startswith("100."), f"unexpected Tailscale IP for client1: {ts_ip1}"
+        assert ts_ip2.startswith("100."), f"unexpected Tailscale IP for client2: {ts_ip2}"
+
+        # Cross-ping: each client pings the other three times.
+        client1.wait_until_succeeds(f"ping -c3 -W5 {ts_ip2}", timeout=60)
+        client2.wait_until_succeeds(f"ping -c3 -W5 {ts_ip1}", timeout=60)
 
     print("All phases passed — headscale-ha e2e test complete.", file=sys.stderr)
   '';
