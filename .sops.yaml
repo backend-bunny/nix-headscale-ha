@@ -1,0 +1,51 @@
+# tests/.sops.yaml
+#
+# SOPS configuration for the headscale-ha project.
+#
+# SETUP (one-time per machine)
+# ────────────────────────────
+#  1. Generate an age key:
+#       age-keygen -o ~/.config/sops/age/keys.txt
+#       # The public key is printed as a comment:  # public key: age1...
+#
+#  2. Replace "age1REPLACE_ME_WITH_YOUR_AGE_PUBLIC_KEY" below with your
+#     actual age public key.  Commit this change — the public key is not secret.
+#
+#  3. (Optional) Add your teammates' PUBLIC keys to the recipients list
+#     so multiple people can decrypt. Add as many "- age: ..." entries
+#     as needed under each keys entry.
+#
+#  4. (Optional) Add a PGP key for CI/CD backup decryption.
+#
+# DECRYPTION
+# ──────────
+#   export SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt
+#   sops --decrypt tests/secrets.yaml
+#
+# Or set the age key directly (useful in CI):
+#   export SOPS_AGE_KEY="AGE-SECRET-KEY-1..."
+#   sops --decrypt tests/secrets.yaml
+
+creation_rules:
+  # ── Cluster secrets (PKI + Cloudflare + B2) ──────────────────────────
+  - path_regex: tests/secrets\.yaml$
+    key_groups:
+      - age:
+          # Replace the placeholder with your actual age PUBLIC key.
+          # Run `age-keygen -o /tmp/key.txt && cat /tmp/key.txt` to generate one.
+          - age1REPLACE_ME_WITH_YOUR_AGE_PUBLIC_KEY
+
+          # Add teammates' keys here, one entry per person:
+          # - age1TEAMMATE_B_PUBLIC_KEY
+
+  # ── Per-node secret files (optional, if you split secrets per host) ───
+  - path_regex: secrets/node[0-9]+\.yaml$
+    key_groups:
+      - age:
+          - age1REPLACE_ME_WITH_YOUR_AGE_PUBLIC_KEY
+
+  # ── Any other yaml in the secrets/ directory ─────────────────────────
+  - path_regex: secrets/.*\.yaml$
+    key_groups:
+      - age:
+          - age1REPLACE_ME_WITH_YOUR_AGE_PUBLIC_KEY

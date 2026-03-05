@@ -1,0 +1,22 @@
+# nix-headscale-ha .gitignore
+
+# ── Nix build artifacts ──────────────────────────────────────────────────────
+result
+result-*
+
+# ── Generated PKI (contains private keys — never commit unencrypted) ─────────
+# The gen-test-secrets.sh script writes certs to ./pki/ by default.
+# The ENCRYPTED form lives in tests/secrets.yaml and is safe to commit.
+pki/
+*.key
+# (*.crt files are public material — you may choose to track them, but they
+#  live inside the SOPS bundle too so there's no need)
+
+# ── Unencrypted secrets draft (safe to commit only when SOPS-encrypted) ──────
+# If you ran gen-test-secrets.sh with --no-encrypt, the result is plaintext:
+# tests/secrets.yaml  ← comment this line out if you want to track the
+#                        SOPS-encrypted version (recommended)
+
+# ── Editor / OS artefacts ────────────────────────────────────────────────────
+.DS_Store
+.direnv
