@@ -53,7 +53,7 @@
           caddy-cloudflare = pkgs.caddy.withPlugins {
             plugins = ["github.com/caddy-dns/cloudflare@v0.2.1"];
             # Replace with the hash printed by the bootstrap command above.
-            hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            hash = "sha256-hZKTEzevrabjgZCCcoRKlqUfdDIUr89KEFJ84kyFxeg=";
           };
         };
 
@@ -93,7 +93,8 @@
       inherit overlay nixosModules;
 
       # -----------------------------------------------------------------------
-      # Example NixOS configurations (two-node cluster)
+      # Example NixOS configurations — see docs/examples/ for the source files
+      # These are illustrative; copy and adapt them into your own repo.
       # Deploy with: nixos-rebuild switch --flake .#node1
       # -----------------------------------------------------------------------
       nixosConfigurations = {
@@ -102,7 +103,7 @@
           modules = [
             {nixpkgs.overlays = [overlay];}
             nixosModules.headscale-ha
-            ./nixos/node1.nix
+            ./docs/examples/node1.nix
           ];
         };
 
@@ -111,7 +112,7 @@
           modules = [
             {nixpkgs.overlays = [overlay];}
             nixosModules.headscale-ha
-            ./nixos/node2.nix
+            ./docs/examples/node2.nix
           ];
         };
 
@@ -120,7 +121,7 @@
           modules = [
             {nixpkgs.overlays = [overlay];}
             nixosModules.headscale-ha
-            ./nixos/node3.nix
+            ./docs/examples/node3.nix
           ];
         };
       };
