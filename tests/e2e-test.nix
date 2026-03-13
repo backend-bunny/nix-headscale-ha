@@ -20,6 +20,13 @@
 # Phase 6  Client connectivity: two Tailscale clients register via headscale
 #          and successfully exchange ICMP traffic through the WireGuard tunnel
 #          (routed via the embedded DERP server).
+# Phase 7  Failover with live clients: node1 goes down mid-session; node2 takes
+#          over; client Tailscale IPs are identical after the DB restore;
+#          cross-ping succeeds again; Caddy reroutes (end-to-end from a client).
+# Phase 8  Storage outage: Garage is stopped while node2 is the primary;
+#          headscale continues serving from local SQLite; VPN traffic flows;
+#          new headscale data is written locally; Garage restarts and
+#          litestream resumes replication (S3 object count increases).
 #
 # Infrastructure
 # ──────────────
@@ -617,7 +624,7 @@ in
       with subtest("phase2: stop node1 leader-election → node2 takes over"):
           node1.systemctl("stop headscale-leader-election.service")
 
-          # Dead threshold = 4 s + one election cycle ≈ 6–8 s
+          # Dead threshold = 4 s + one election cycle ≈ 6-8 s
           wait_for_leader(node2, "node2", timeout=20)
           wait_for_leader(node3, "node2", timeout=20)
 
@@ -746,6 +753,104 @@ in
           # Cross-ping: each client pings the other three times.
           client1.wait_until_succeeds(f"ping -c3 -W5 {ts_ip2}", timeout=60)
           client2.wait_until_succeeds(f"ping -c3 -W5 {ts_ip1}", timeout=60)
+
+      # ── Phase 7: Client connectivity survives a failover ──────────────────────
+
+      with subtest("phase7: node1 fails again → node2 leads → Tailscale tunnel stays up"):
+          # node3 is still stopped from phase 4 — bring it back first so that
+          # stopping node1 leaves node2+node3 = 2/3 ≥ quorum (majority of 3).
+          node3.systemctl("start headscale-leader-election.service")
+          node3.wait_for_unit("headscale-leader-election.service")
+          node3.wait_for_open_port(50555)
+
+          # Stop node1; node2 (priority 20 < node3 priority 30) should win.
+          node1.systemctl("stop headscale-leader-election.service")
+          wait_for_leader(node2, "node2", timeout=20)
+          wait_for_leader(node3, "node2", timeout=20)
+
+          assert_is_leader(node2)
+          assert_not_leader(node3)
+
+      with subtest("phase7b: headscale on node2 and Tailscale IPs stable after restore"):
+          node2.wait_until_succeeds("systemctl is-active headscale.service", timeout=90)
+          node2.wait_for_open_port(8080)
+          node2.succeed("curl -sf http://127.0.0.1:8080/health")
+
+          # IPs must be identical — the DB was round-tripped through Garage.
+          ts_ip1_after = client1.wait_until_succeeds(
+              "tailscale ip -4 2>/dev/null | grep -v '^$'", timeout=30
+          ).strip()
+          ts_ip2_after = client2.wait_until_succeeds(
+              "tailscale ip -4 2>/dev/null | grep -v '^$'", timeout=30
+          ).strip()
+          assert ts_ip1_after == ts_ip1, (
+              f"client1 IP changed across failover: {ts_ip1} → {ts_ip1_after}"
+          )
+          assert ts_ip2_after == ts_ip2, (
+              f"client2 IP changed across failover: {ts_ip2} → {ts_ip2_after}"
+          )
+
+          # WireGuard keys are cached locally from phase 6 so the tunnel stays
+          # live even before tailscaled fully re-establishes the control-plane
+          # long-poll to node2's headscale.  The cross-ping is the definitive
+          # VPN-survivability assertion; it also exercises the DERP path on node2.
+          client1.wait_until_succeeds(f"ping -c3 -W5 {ts_ip2}", timeout=90)
+          client2.wait_until_succeeds(f"ping -c3 -W5 {ts_ip1}", timeout=90)
+
+      with subtest("phase7c: Caddy reroutes to node2 — verified end-to-end from client"):
+          # headscale.test.internal resolves to node1 (192.168.1.11).
+          # node1's Caddy is still up; its active health check on /leader now
+          # routes to node2 (the only backend returning 200).  This exercises
+          # the full path: client → node1 Caddy → node2 headscale.
+          client1.succeed("curl -sf https://headscale.test.internal/health")
+
+      # ── Phase 8: Storage outage — headscale must keep serving ──────────────
+
+      with subtest("phase8: stop Garage → headscale and VPN traffic unaffected"):
+          # Baseline object count before the outage.
+          objects_before = int(storage.succeed(
+              "curl -sf -H 'Authorization: Bearer test-garage-admin'"
+              " 'http://127.0.0.1:3903/v1/bucket?globalAlias=headscale-test'"
+              " | jq '.objects'"
+          ).strip())
+
+          storage.systemctl("stop garage.service")
+          import time; time.sleep(5)  # give litestream time to notice
+
+          # headscale stores state in local SQLite — must stay healthy.
+          node2.succeed("curl -sf http://127.0.0.1:8080/health")
+          node2.succeed("systemctl is-active headscale.service")
+
+          # Leader election is pure in-memory/mTLS — completely unaffected.
+          assert_is_leader(node2)
+
+          # Prove the local DB is writable even without a replication backend.
+          node2.succeed("headscale users create storage-offline-user")
+
+          # WireGuard is peer-to-peer — VPN traffic must continue flowing.
+          client1.succeed(f"ping -c3 -W5 {ts_ip2}")
+          client2.succeed(f"ping -c3 -W5 {ts_ip1}")
+
+      with subtest("phase8b: Garage restores → litestream resumes replication"):
+          storage.systemctl("start garage.service")
+          storage.wait_for_unit("garage.service")
+          storage.wait_for_open_port(9000)
+
+          # litestream retries with backoff when the backend is unavailable;
+          # wait for the service to report active again.
+          node2.wait_until_succeeds(
+              "systemctl is-active litestream-replicate.service", timeout=60
+          )
+
+          # After reconnecting, litestream flushes pending WAL frames.
+          # The user created during the outage must have been replicated,
+          # so the S3 object count must exceed the pre-outage baseline.
+          storage.wait_until_succeeds(
+              "curl -sf -H 'Authorization: Bearer test-garage-admin'"
+              " 'http://127.0.0.1:3903/v1/bucket?globalAlias=headscale-test'"
+              f" | jq -e '.objects > {objects_before}'",
+              timeout=60,
+          )
 
       print("All phases passed — headscale-ha e2e test complete.", file=sys.stderr)
     '';
