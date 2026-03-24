@@ -125,6 +125,8 @@
     http://${cfg.serverName} {
       redir https://{host}{uri} permanent
     }
+
+    ${cfg.extraConfig}
   '';
 in {
   # ---------------------------------------------------------------------------
@@ -271,6 +273,17 @@ in {
       type = types.str;
       default = "3s";
       description = "Caddy active health check timeout.";
+    };
+
+    extraConfig = mkOption {
+      type = types.lines;
+      default = "";
+      description = "Additional Caddyfile content appended after the generated configuration. Use this to add extra site blocks or snippets.";
+      example = ''
+        monitoring.example.com {
+          reverse_proxy localhost:9090
+        }
+      '';
     };
   };
 
